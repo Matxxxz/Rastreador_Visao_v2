@@ -1,0 +1,12 @@
+# Ambientes virtuais
+venv/
+env/
+.env
+
+# Arquivos locais e IDE
+.idea/
+__pycache__/
+*.pyc
+
+# Configurações locais (Câmera IP)
+config.py
