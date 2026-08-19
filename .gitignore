@@ -8,5 +8,20 @@ env/
 __pycache__/
 *.pyc
 
-# Configurações locais (Câmera IP)
+# Configurações locais
 config.py
+
+# Ambiente Virtual
+.venv/
+ENV/
+
+# Python
+*.py[cod]
+*$py.class
+
+# PyCharm / IDEs
+.vscode/
+
+# SO
+.DS_Store
+Thumbs.db
