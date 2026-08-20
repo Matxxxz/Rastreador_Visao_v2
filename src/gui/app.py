@@ -1,11 +1,12 @@
-import sys
 import cv2
 import numpy as np
 import logging
+import json
+from pathlib import Path
 from PySide6.QtCore import QThread, Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel,
+    QMainWindow, QWidget, QLabel,
     QVBoxLayout, QHBoxLayout, QSlider, QGroupBox, QGridLayout, QPushButton
 )
 
@@ -15,9 +16,27 @@ from config import Config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SETTINGS_FILE = PROJECT_ROOT / "settings.json"
+
+
+def _normalize_hsv_values(values, fallback):
+    try:
+        normalized = [int(v) for v in values]
+    except (TypeError, ValueError):
+        return list(fallback)
+
+    if len(normalized) != 3:
+        return list(fallback)
+
+    limits = [(0, 179), (0, 255), (0, 255)]
+    for i, (value, (min_value, max_value)) in enumerate(zip(normalized, limits)):
+        normalized[i] = int(max(min_value, min(max_value, value)))
+
+    return normalized
+
 
 class VideoThread(QThread):
-    # PySide6 usa 'Signal' em vez de 'pyqtSignal'
     change_pixmap_signal = Signal(np.ndarray, np.ndarray)
     telemetry_signal = Signal(int, int, int)  # FPS, X, Y
 
@@ -33,6 +52,7 @@ class VideoThread(QThread):
     def run(self):
         if not self.cam.connect():
             logging.error("Thread de vídeo abortada: Falha ao conectar na câmera.")
+            self.telemetry_signal.emit(-1, -1, -1)
             return
 
         import time
@@ -41,7 +61,9 @@ class VideoThread(QThread):
         while self._is_running:
             frame = self.cam.get_frame()
             if frame is None:
-                continue
+                logging.error("Thread de vídeo interrompida: câmera principal sem sinal.")
+                self.telemetry_signal.emit(-1, -1, -1)
+                break
 
             processed_frame, mask, centroid = self.processor.process(
                 frame,
@@ -68,7 +90,9 @@ class VideoThread(QThread):
 
     def stop(self):
         self._is_running = False
-        self.wait()
+        self.cam.release()
+        if not self.wait(1500):
+            logging.warning("Thread de vídeo não encerrou dentro do tempo esperado.")
 
 
 class MainWindow(QMainWindow):
@@ -118,7 +142,24 @@ class MainWindow(QMainWindow):
         labels = ['H Min', 'S Min', 'V Min', 'H Max', 'S Max', 'V Max']
         self.sliders = []
 
-        defaults = list(Config.HSV_LOWER) + list(Config.HSV_UPPER)
+        # Tenta carregar configurações salvas, faz fallback para o Config padrão se falhar
+        loaded_lower = list(Config.HSV_LOWER)
+        loaded_upper = list(Config.HSV_UPPER)
+
+        if SETTINGS_FILE.exists():
+            try:
+                with open(SETTINGS_FILE, "r") as f:
+                    data = json.load(f)
+                    loaded_lower = _normalize_hsv_values(data.get("hsv_lower", loaded_lower), Config.HSV_LOWER)
+                    loaded_upper = _normalize_hsv_values(data.get("hsv_upper", loaded_upper), Config.HSV_UPPER)
+            except Exception as e:
+                logging.warning(f"Falha ao ler {SETTINGS_FILE}. Usando valores padrão. Erro: {e}")
+
+        # Atualiza a thread com os valores carregados
+        self.thread.hsv_lower = loaded_lower.copy()
+        self.thread.hsv_upper = loaded_upper.copy()
+
+        defaults = loaded_lower + loaded_upper
         max_values = [179, 255, 255, 179, 255, 255]
 
         for i in range(6):
@@ -152,7 +193,6 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(video_layout, stretch=2)
         main_layout.addLayout(side_panel, stretch=1)
 
-    # PySide6 usa 'Slot' em vez de 'pyqtSlot'
     @Slot(np.ndarray, np.ndarray)
     def update_image(self, cv_img: np.ndarray, mask_img: np.ndarray):
         qt_img = self.convert_cv_to_qt(cv_img)
@@ -165,10 +205,19 @@ class MainWindow(QMainWindow):
         rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_img.shape
         bytes_per_line = ch * w
-        return QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        return QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
 
     @Slot(int, int, int)
     def update_telemetry(self, fps: int, x: int, y: int):
+        if fps < 0:
+            self.lbl_fps.setText("FPS: sem vídeo")
+            self.lbl_coords.setText("Coordenadas: sem vídeo disponível")
+            self.image_label.clear()
+            self.mask_label.clear()
+            self.image_label.setText("Sem vídeo disponível")
+            self.mask_label.setText("Sem vídeo disponível")
+            return
+
         self.lbl_fps.setText(f"FPS: {fps}")
         if x != -1 and y != -1:
             self.lbl_coords.setText(f"Coordenadas: X={x}, Y={y}")
@@ -183,5 +232,17 @@ class MainWindow(QMainWindow):
         self.thread.processor.reset_trajectory()
 
     def closeEvent(self, event):
+        """Salva a calibração HSV no momento em que a janela é fechada e encerra a thread."""
+        config_data = {
+            "hsv_lower": self.thread.hsv_lower,
+            "hsv_upper": self.thread.hsv_upper
+        }
+        try:
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(config_data, f, indent=4)
+            logging.info("Calibração HSV salva com sucesso.")
+        except Exception as e:
+            logging.error(f"Erro ao salvar configurações: {e}")
+
         self.thread.stop()
         event.accept()
