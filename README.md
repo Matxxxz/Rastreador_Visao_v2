@@ -12,12 +12,12 @@ A **Versão 1** deste projeto consistia em uma arquitetura híbrida: o processam
 * **Overhead de Rede:** A comunicação inter-processos via UDP adicionava latência desnecessária ao loop de controle.
 * **Complexidade de Manutenção:** Manter duas bases de código em linguagens diferentes e gerenciar a serialização dos pacotes violava o princípio de simplicidade para o escopo proposto.
 
-A **Versão 2** resolve esse débito técnico ao unificar o ecossistema em **100% Python**. O processamento pesado continua sendo feito por bindings C++ (OpenCV/NumPy), mas a interface gráfica foi migrada para PyQt6, permitindo o tráfego de matrizes de imagem via ponteiros de memória em vez de protocolos de rede.
+A **Versão 2** resolve esse débito técnico ao unificar o ecossistema em **100% Python**. O processamento pesado continua sendo feito por bindings C++ (OpenCV/NumPy), mas a interface gráfica foi migrada para PySide6, permitindo o tráfego de matrizes de imagem via ponteiros de memória em vez de protocolos de rede.
 
 ## ⚙️ Arquitetura e Tecnologias
 * **Linguagem:** Python 3
 * **Visão Computacional:** OpenCV (`cv2`) + NumPy
-* **Interface Gráfica (GUI):** PyQt6
+* **Interface Gráfica (GUI):** PySide6
 * **Design Patterns:** Orientação a Objetos, Segregação de Interfaces (IO de Vídeo isolado do Processamento Lógico).
 * **Concorrência:** Uso de Multithreading (`QThread`) para evitar o bloqueio do Event Loop da interface pelo processamento síncrono dos quadros.
 
