@@ -15,10 +15,10 @@ class FrameProcessor:
 
     def process(
             self,
-            frame: np.ndarray,
+            frame: Optional[np.ndarray],
             hsv_lower: Tuple[int, int, int] = Config.HSV_LOWER,
             hsv_upper: Tuple[int, int, int] = Config.HSV_UPPER
-    ) -> Tuple[np.ndarray, np.ndarray, Optional[Tuple[int, int]]]:
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int]]]:
         """ Processa o frame recebido e retorna:
         - processed_frame: Frame original desenhado com contornos, centroide e rastro.
         - mask: Máscara binária resultante da segmentação por cor.
@@ -27,6 +27,20 @@ class FrameProcessor:
         if frame is None:
             return None, None, None
 
+        normalized_lower = []
+        normalized_upper = []
+        hsv_limits = ((0, 179), (0, 255), (0, 255))
+
+        for lower_value, upper_value, (min_value, max_value) in zip(hsv_lower, hsv_upper, hsv_limits):
+            lower_value = int(max(min_value, min(max_value, lower_value)))
+            upper_value = int(max(min_value, min(max_value, upper_value)))
+
+            if lower_value > upper_value:
+                lower_value, upper_value = upper_value, lower_value
+
+            normalized_lower.append(lower_value)
+            normalized_upper.append(upper_value)
+
         # 1. Filtro Gaussiano para atenuação de ruído (Kernel 11x11)
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
 
@@ -34,11 +48,12 @@ class FrameProcessor:
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
 
         # 3. Limiarização por cor (Gera imagem binária)
-        mask = cv2.inRange(hsv, np.array(hsv_lower), np.array(hsv_upper))
+        mask = cv2.inRange(hsv, np.array(normalized_lower), np.array(normalized_upper))
 
         # 4. Operações morfológicas para remoção de ruídos residuais
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
+        morph_kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.erode(mask, morph_kernel, iterations=2)
+        mask = cv2.dilate(mask, morph_kernel, iterations=2)
 
         # 5. Detecção de contornos na máscara
         contours, _ = cv2.findContours(
