@@ -13,29 +13,32 @@ class CameraStream:
 
     def connect(self) -> bool:
         """
-        Tenta conectar à câmera IP. Se falhar ou estiver desativado,
-        faz o fallback automático para a webcam local.
+        Tenta conectar apenas à câmera principal configurada.
+        Em caso de falha, aplica fail-fast e não assume outra fonte de vídeo.
         """
+        if not Config.USE_IP_CAMERA or not Config.CAMERA_IP:
+            logging.error("Erro Crítico: câmera principal desativada ou sem endereço configurado.")
+            return False
+
         try:
-            if Config.USE_IP_CAMERA and Config.CAMERA_IP:
-                logging.info(f"Tentando conectar à Câmera IP: {Config.CAMERA_IP}")
-                self.cap = cv2.VideoCapture(Config.CAMERA_IP)
-                # FORÇA O OPENCV A NÃO FAZER BUFFERING DA REDE (Crucial para diminuir latência)
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            else:
-                raise ValueError("Uso de câmera IP desativado na configuração ou IP ausente.")
+            logging.info(f"Tentando conectar à Câmera IP: {Config.CAMERA_IP}")
+            self.cap = cv2.VideoCapture(Config.CAMERA_IP)
+            # FORÇA O OPENCV A NÃO FAZER BUFFERING DA REDE (Crucial para diminuir latência)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-            # Verifica se o frame pode ser lido (conexão bem-sucedida)
             if not self.cap.isOpened():
-                raise ConnectionError("Falha de rede ao abrir a Câmera IP.")
+                raise ConnectionError("Falha crítica ao abrir a Câmera IP.")
 
-        except (ValueError, ConnectionError) as e:
-            logging.warning(f"{e} Iniciando fallback para Webcam (Index {Config.FALLBACK_CAMERA_INDEX}).")
-            self.cap = cv2.VideoCapture(Config.FALLBACK_CAMERA_INDEX)
+            # Confirma que a fonte realmente entrega frames, não apenas abre o stream.
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                raise ConnectionError("Câmera IP abriu, mas não entregou frame inicial.")
 
-        # Validação final do Fallback
-        if not self.cap or not self.cap.isOpened():
-            logging.error("Erro Crítico: Nenhuma fonte de vídeo (IP ou Webcam) disponível.")
+        except Exception as e:
+            logging.error(f"Erro Crítico ao conectar na câmera principal: {e}")
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
             return False
 
         # Configura a resolução via API do OpenCV
@@ -57,11 +60,13 @@ class CameraStream:
         try:
             ret, frame = self.cap.read()
             if not ret:
-                logging.warning("Frame descartado/corrompido. Câmera desconectada?")
+                logging.error("Erro Crítico: falha ao ler frame da câmera principal.")
+                self.release()
                 return None
             return frame
         except Exception as e:
-            logging.error(f"Exceção durante a leitura do frame: {e}")
+            logging.error(f"Erro Crítico durante a leitura do frame: {e}")
+            self.release()
             return None
 
     def release(self):
