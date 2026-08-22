@@ -10,6 +10,8 @@ __pycache__/
 
 # Configurações locais
 config.py
+settings.json
+!settings.example.json
 
 # Ambiente Virtual
 .venv/
