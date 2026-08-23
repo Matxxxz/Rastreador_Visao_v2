@@ -1,17 +1,20 @@
 {
   "version": 1,
-  "author": "Mateus",
+  "author": "Mateus Augusto",
   "editor": "wokwi",
   "parts": [
-    {
-      "type": "wokwi-esp32-devkit-v1",
-      "id": "esp",
-      "top": 0,
-      "left": 0,
-      "attrs": {}
-    }
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-led", "id": "led_esq", "top": -100, "left": 50, "attrs": { "color": "red", "label": "Motor ESQ (25)" } },
+    { "type": "wokwi-led", "id": "led_dir", "top": -100, "left": 150, "attrs": { "color": "blue", "label": "Motor DIR (14)" } },
+    { "type": "wokwi-resistor", "id": "r1", "top": -50, "left": 50, "attrs": { "value": "330" } },
+    { "type": "wokwi-resistor", "id": "r2", "top": -50, "left": 150, "attrs": { "value": "330" } }
   ],
-  "connections": [],
-  "dependencies": {}
+  "connections": [
+    [ "esp:25", "led_esq:A", "red", [ "v0" ] ],
+    [ "led_esq:C", "r1:1", "black", [ "v0" ] ],
+    [ "r1:2", "esp:GND.1", "black", [ "v0" ] ],
+    [ "esp:14", "led_dir:A", "blue", [ "v0" ] ],
+    [ "led_dir:C", "r2:1", "black", [ "v0" ] ],
+    [ "r2:2", "esp:GND.1", "black", [ "v0" ] ]
+  ]
 }
-
