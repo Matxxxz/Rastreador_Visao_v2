@@ -1,25 +1,25 @@
 import cv2
 import numpy as np
-import logging
 from collections import deque
 from typing import Tuple, Optional
 from config import Config
 from src.vision.kalman import KalmanTracker
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class FrameProcessor:
     def __init__(self):
         self.trajectory = deque(maxlen=Config.TRAJECTORY_MAX_POINTS)
         self.kalman = KalmanTracker()
         self.lost_frames = 0
+        self.has_lock = False
         self.max_lost_frames = 15  # TTL: Limite de frames para confiar na inércia sem vídeo
+        self._morph_kernel = np.ones((3, 3), np.uint8)
 
     def process(
             self,
             frame: Optional[np.ndarray],
             hsv_lower: Tuple[int, int, int] = Config.HSV_LOWER,
-            hsv_upper: Tuple[int, int, int] = Config.HSV_UPPER
+            hsv_upper: Tuple[int, int, int] = Config.HSV_UPPER,
+            dt: float = 1.0
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int]]]:
 
         if frame is None:
@@ -43,16 +43,15 @@ class FrameProcessor:
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, np.array(normalized_lower), np.array(normalized_upper))
 
-        morph_kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.erode(mask, morph_kernel, iterations=2)
-        mask = cv2.dilate(mask, morph_kernel, iterations=2)
+        mask = cv2.erode(mask, self._morph_kernel, iterations=2)
+        mask = cv2.dilate(mask, self._morph_kernel, iterations=2)
 
         contours, _ = cv2.findContours(
             mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
 
         measured_centroid = None
-        predicted_centroid = self.kalman.predict()
+        predicted_centroid = self.kalman.predict(dt)
 
         if len(contours) > 0:
             largest_contour = max(contours, key=cv2.contourArea)
@@ -67,6 +66,7 @@ class FrameProcessor:
                     measured_centroid = (center_x, center_y)
 
                     self.kalman.correct(center_x, center_y)
+                    self.has_lock = True
                     self.lost_frames = 0  # Reseta o contador de perda
 
                     ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
@@ -76,7 +76,9 @@ class FrameProcessor:
         if measured_centroid is None:
             self.lost_frames += 1
 
-        if self.lost_frames > self.max_lost_frames:
+        if not self.has_lock:
+            final_centroid = measured_centroid
+        elif self.lost_frames > self.max_lost_frames:
             final_centroid = None  # Aborta rastreamento fantasma
         else:
             final_centroid = measured_centroid if measured_centroid else predicted_centroid
@@ -105,4 +107,5 @@ class FrameProcessor:
     def reset_trajectory(self):
         self.trajectory.clear()
         self.kalman.reset()
+        self.has_lock = False
         self.lost_frames = 0

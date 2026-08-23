@@ -13,7 +13,7 @@ class KalmanTracker:
             [0, 1, 0, 0]
         ], np.float32)
 
-        # Matriz de Transição (F) - dt = 1 (1 frame)
+        # Matriz de Transição (F) inicia em dt=1 e é atualizada dinamicamente no predict.
         self.kalman.transitionMatrix = np.array([
             [1, 0, 1, 0],
             [0, 1, 0, 1],
@@ -22,16 +22,27 @@ class KalmanTracker:
         ], np.float32)
 
         # Covariância de Ruído do Processo (Q) - Quão errática é a aceleração do objeto?
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
+        self.kalman.processNoiseCov = (np.eye(4, dtype=np.float32) * np.float32(0.03)).astype(np.float32)
 
         # Covariância de Ruído da Medição (R) - Quão ruidosa é a câmera IP?
-        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 1.0
+        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32)
 
         # Covariância de Erro (P)
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32)
+        self.kalman.statePost = np.zeros((4, 1), np.float32)
 
-    def predict(self) -> tuple[int, int]:
+    def _update_transition_matrix(self, dt: float):
+        dt = float(max(1e-3, min(0.2, dt)))
+        self.kalman.transitionMatrix = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ], np.float32)
+
+    def predict(self, dt: float = 1.0) -> tuple[int, int]:
         """Avança o modelo matemático 1 frame no futuro e retorna a previsão (X, Y)."""
+        self._update_transition_matrix(dt)
         prediction = self.kalman.predict()
         return int(prediction[0, 0]), int(prediction[1, 0])
 
@@ -43,4 +54,5 @@ class KalmanTracker:
     def reset(self):
         """Reinicia o estado matricial do filtro."""
         self.kalman.statePost = np.zeros((4, 1), np.float32)
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
+        self.kalman.statePre = np.zeros((4, 1), np.float32)
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32)
