@@ -3,7 +3,7 @@
 Um sistema modular de Visão Computacional e Telemetria focado em rastreamento de objetos em tempo real, desenvolvido com foco em performance e arquitetura de software limpa.
 
 ## 📌 Visão Geral
-Este projeto implementa um pipeline de visão computacional capaz de capturar fluxos de vídeo (Câmera IP ou Local), aplicar processamento de imagem contínuo e extrair dados espaciais (centroides, trajetórias) de objetos específicos. O sistema é acoplado a um painel de telemetria assíncrono para monitoramento.
+Este projeto implementa um pipeline de visão computacional capaz de capturar fluxo de vídeo da câmera principal configurada, aplicar processamento de imagem contínuo e extrair dados espaciais (centroides, trajetórias) de objetos específicos. O sistema é acoplado a telemetria assíncrona via MQTT para integração com automação e atuadores.
 
 ## 🏗️ Histórico e Motivação (Por que a V2?)
 A **Versão 1** deste projeto consistia em uma arquitetura híbrida: o processamento de visão era feito em Python e os dados eram enviados via Sockets UDP para uma interface gráfica em Java. 
@@ -18,8 +18,14 @@ A **Versão 2** resolve esse débito técnico ao unificar o ecossistema em **100
 * **Linguagem:** Python 3
 * **Visão Computacional:** OpenCV (`cv2`) + NumPy
 * **Interface Gráfica (GUI):** PySide6
+* **Mensageria:** MQTT (`paho-mqtt`)
 * **Design Patterns:** Orientação a Objetos, Segregação de Interfaces (IO de Vídeo isolado do Processamento Lógico).
 * **Concorrência:** Uso de Multithreading (`QThread`) para evitar o bloqueio do Event Loop da interface pelo processamento síncrono dos quadros.
+
+## 🧰 Configuração Local
+- `settings.json` é arquivo local (ignorado no Git) para calibração HSV em runtime.
+- Use `settings.example.json` como modelo para iniciar uma nova máquina.
+- O fluxo de câmera segue política **fail-fast**: sem feed válido da câmera principal, o rastreamento é interrompido e não há fallback automático para outra fonte.
 
 ## 🚀 Roadmap e Escalabilidade (Próximos Passos)
 Embora o escopo atual seja o rastreamento (scanner), a arquitetura modular permite rápida expansão para aplicações de robótica autônoma:
