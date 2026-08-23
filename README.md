@@ -27,6 +27,9 @@ A **Versão 2** resolve esse débito técnico ao unificar o ecossistema em **100
 - Use `settings.example.json` como modelo para iniciar uma nova máquina.
 - O fluxo de câmera segue política **fail-fast**: sem feed válido da câmera principal, o rastreamento é interrompido e não há fallback automático para outra fonte.
 
+## 🧪 Simulação de Firmware (sem hardware)
+Para rodar a simulação do firmware sem hardware, instale a extensão do Wokwi no VS Code, abra o arquivo firmware/diagram.json e pressione F1 > Wokwi: Start Simulator.
+
 ## 🚀 Roadmap e Escalabilidade (Próximos Passos)
 Embora o escopo atual seja o rastreamento (scanner), a arquitetura modular permite rápida expansão para aplicações de robótica autônoma:
 
