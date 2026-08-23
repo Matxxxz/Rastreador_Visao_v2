@@ -5,50 +5,40 @@ from typing import Tuple, Optional
 from config import Config
 from src.vision.kalman import KalmanTracker
 
+
 class FrameProcessor:
     def __init__(self):
         self.trajectory = deque(maxlen=Config.TRAJECTORY_MAX_POINTS)
         self.kalman = KalmanTracker()
         self.lost_frames = 0
         self.has_lock = False
-        self.max_lost_frames = 15  # TTL: Limite de frames para confiar na inércia sem vídeo
+        self.max_lost_frames = 15
         self._morph_kernel = np.ones((3, 3), np.uint8)
 
     def process(
             self,
             frame: Optional[np.ndarray],
-            hsv_lower: Tuple[int, int, int] = Config.HSV_LOWER,
-            hsv_upper: Tuple[int, int, int] = Config.HSV_UPPER,
-            dt: float = 1.0
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int]]]:
-
+            hsv_lower: Tuple[int, int, int],
+            hsv_upper: Tuple[int, int, int],
+            dt: float
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float, float, bool]:
+        """
+        Retorna: frame, mask, x_norm, y_norm, is_tracking
+        """
         if frame is None:
-            return None, None, None
+            return None, None, 0.0, 0.0, False
 
-        normalized_lower = []
-        normalized_upper = []
-        hsv_limits = ((0, 179), (0, 255), (0, 255))
-
-        for lower_value, upper_value, (min_value, max_value) in zip(hsv_lower, hsv_upper, hsv_limits):
-            lower_value = int(max(min_value, min(max_value, lower_value)))
-            upper_value = int(max(min_value, min(max_value, upper_value)))
-
-            if lower_value > upper_value:
-                lower_value, upper_value = upper_value, lower_value
-
-            normalized_lower.append(lower_value)
-            normalized_upper.append(upper_value)
+        # O loop inútil de sanitização do HSV foi removido daqui.
+        # Custo computacional reduzido. A responsabilidade do input seguro agora é da Thread.
 
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, np.array(normalized_lower), np.array(normalized_upper))
+        mask = cv2.inRange(hsv, np.array(hsv_lower, dtype=np.uint8), np.array(hsv_upper, dtype=np.uint8))
 
         mask = cv2.erode(mask, self._morph_kernel, iterations=2)
         mask = cv2.dilate(mask, self._morph_kernel, iterations=2)
 
-        contours, _ = cv2.findContours(
-            mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
+        contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         measured_centroid = None
         predicted_centroid = self.kalman.predict(dt)
@@ -59,7 +49,6 @@ class FrameProcessor:
 
             if area > Config.MIN_CONTOUR_AREA:
                 moments = cv2.moments(largest_contour)
-
                 if moments["m00"] != 0:
                     center_x = int(moments["m10"] / moments["m00"])
                     center_y = int(moments["m01"] / moments["m00"])
@@ -67,25 +56,41 @@ class FrameProcessor:
 
                     self.kalman.correct(center_x, center_y)
                     self.has_lock = True
-                    self.lost_frames = 0  # Reseta o contador de perda
+                    self.lost_frames = 0
 
                     ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
                     cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
 
-        # Lógica de TTL (Time-To-Live) para a previsão matemática
         if measured_centroid is None:
             self.lost_frames += 1
 
         if not self.has_lock:
             final_centroid = measured_centroid
         elif self.lost_frames > self.max_lost_frames:
-            final_centroid = None  # Aborta rastreamento fantasma
+            final_centroid = None
         else:
             final_centroid = measured_centroid if measured_centroid else predicted_centroid
 
-        # Renderização Camada 1: Rastro da Trajetória (Azul)
+        is_tracking = False
+        x_norm, y_norm = 0.0, 0.0
+
         if final_centroid and final_centroid != (0, 0):
             self.trajectory.appendleft(final_centroid)
+            is_tracking = True
+
+            # Matemática isolada aqui (SRP).
+            height, width = frame.shape[:2]
+            center_x, center_y = width / 2.0, height / 2.0
+            nx = (final_centroid[0] - center_x) / center_x
+            ny = (final_centroid[1] - center_y) / center_y
+
+            x_norm = max(-1.0, min(1.0, float(nx)))
+            y_norm = max(-1.0, min(1.0, float(ny)))
+
+            if measured_centroid:
+                cv2.circle(frame, measured_centroid, 7, (0, 0, 255), -1)
+            else:
+                cv2.circle(frame, predicted_centroid, 7, (0, 255, 0), -1)
 
         for i in range(1, len(self.trajectory)):
             if self.trajectory[i - 1] is None or self.trajectory[i] is None:
@@ -93,16 +98,7 @@ class FrameProcessor:
             thickness = int(np.sqrt(Config.TRAJECTORY_MAX_POINTS / float(i + 1)) * 2.5)
             cv2.line(frame, self.trajectory[i - 1], self.trajectory[i], (255, 0, 0), thickness)
 
-        # Renderização Camada 2: Centroides sobrepostos ao rastro
-        if final_centroid and final_centroid != (0, 0):
-            if measured_centroid:
-                # Alvo Confirmado na Câmera -> PONTO VERMELHO
-                cv2.circle(frame, measured_centroid, 7, (0, 0, 255), -1)
-            else:
-                # Alvo Oculto, Predição Ativa -> PONTO VERDE
-                cv2.circle(frame, predicted_centroid, 7, (0, 255, 0), -1)
-
-        return frame, mask, final_centroid
+        return frame, mask, x_norm, y_norm, is_tracking
 
     def reset_trajectory(self):
         self.trajectory.clear()
