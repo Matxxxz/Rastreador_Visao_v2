@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import logging
 import json
+import threading
+import time
 from pathlib import Path
 from PySide6.QtCore import QThread, Signal, Qt, Slot
 from PySide6.QtGui import QImage, QPixmap
@@ -12,9 +14,8 @@ from PySide6.QtWidgets import (
 
 from src.vision.camera import CameraStream
 from src.vision.processor import FrameProcessor
+from src.io.mqtt_sender import MQTTSender
 from config import Config
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SETTINGS_FILE = PROJECT_ROOT / "settings.json"
@@ -38,11 +39,12 @@ def _normalize_hsv_values(values, fallback):
 
 class VideoThread(QThread):
     change_pixmap_signal = Signal(np.ndarray, np.ndarray)
-    telemetry_signal = Signal(int, int, int)  # FPS, X, Y
+    telemetry_signal = Signal(int, int, int, int, int)
 
     def __init__(self):
         super().__init__()
         self._is_running = True
+        self._state_lock = threading.Lock()
         self.cam = CameraStream()
         self.processor = FrameProcessor()
 
@@ -52,47 +54,60 @@ class VideoThread(QThread):
     def run(self):
         if not self.cam.connect():
             logging.error("Thread de vídeo abortada: Falha ao conectar na câmera.")
-            self.telemetry_signal.emit(-1, -1, -1)
+            self.telemetry_signal.emit(-1, -1, -1, 0, 0)
             return
 
-        import time
-        prev_time = time.time()
+        prev_time = time.perf_counter()
 
-        while self._is_running:
-            frame = self.cam.get_frame()
-            if frame is None:
-                logging.error("Thread de vídeo interrompida: câmera principal sem sinal.")
-                self.telemetry_signal.emit(-1, -1, -1)
-                break
+        try:
+            while self._is_running and not self.isInterruptionRequested():
+                frame = self.cam.get_frame()
+                if frame is None:
+                    logging.error("Thread de vídeo interrompida: câmera principal sem sinal.")
+                    self.telemetry_signal.emit(-1, -1, -1, 0, 0)
+                    break
 
-            processed_frame, mask, centroid = self.processor.process(
-                frame,
-                hsv_lower=tuple(self.hsv_lower),
-                hsv_upper=tuple(self.hsv_upper)
-            )
+                curr_time = time.perf_counter()
+                dt = max(1e-6, curr_time - prev_time)
+                prev_time = curr_time
 
-            curr_time = time.time()
-            fps = int(1.0 / (curr_time - prev_time)) if (curr_time - prev_time) > 0 else 0
-            prev_time = curr_time
+                with self._state_lock:
+                    local_lower = tuple(self.hsv_lower)
+                    local_upper = tuple(self.hsv_upper)
+                    processed_frame, mask, centroid = self.processor.process(
+                        frame,
+                        hsv_lower=local_lower,
+                        hsv_upper=local_upper,
+                        dt=dt,
+                    )
 
-            x, y = centroid if centroid else (-1, -1)
+                fps = int(1.0 / dt) if dt > 0 else 0
+                x, y = centroid if centroid else (-1, -1)
+                h, w = processed_frame.shape[:2]
 
-            self.change_pixmap_signal.emit(processed_frame, mask)
-            self.telemetry_signal.emit(fps, x, y)
-
-        self.cam.release()
+                self.change_pixmap_signal.emit(processed_frame.copy(), mask.copy())
+                self.telemetry_signal.emit(fps, x, y, w, h)
+        finally:
+            self.cam.release()
 
     def update_hsv(self, index: int, value: int, is_upper: bool):
-        if is_upper:
-            self.hsv_upper[index] = value
-        else:
-            self.hsv_lower[index] = value
+        with self._state_lock:
+            if is_upper:
+                self.hsv_upper[index] = value
+            else:
+                self.hsv_lower[index] = value
+
+    def reset_trajectory(self):
+        with self._state_lock:
+            self.processor.reset_trajectory()
 
     def stop(self):
         self._is_running = False
-        self.cam.release()
-        if not self.wait(1500):
-            logging.warning("Thread de vídeo não encerrou dentro do tempo esperado.")
+        self.requestInterruption()
+        if not self.wait(3000):
+            logging.warning("Thread de vídeo não encerrou dentro do tempo esperado. Forçando liberação.")
+            self.cam.release()
+            self.wait(1000)
 
 
 class MainWindow(QMainWindow):
@@ -100,6 +115,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Vision Tracker V2 - Telemetria e Controle (PySide6)")
         self.setGeometry(100, 100, 1000, 600)
+
+        self.mqtt = MQTTSender()
+        self.mqtt.connect()
 
         self.thread = VideoThread()
         self.init_ui()
@@ -142,7 +160,6 @@ class MainWindow(QMainWindow):
         labels = ['H Min', 'S Min', 'V Min', 'H Max', 'S Max', 'V Max']
         self.sliders = []
 
-        # Tenta carregar configurações salvas, faz fallback para o Config padrão se falhar
         loaded_lower = list(Config.HSV_LOWER)
         loaded_upper = list(Config.HSV_UPPER)
 
@@ -155,7 +172,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logging.warning(f"Falha ao ler {SETTINGS_FILE}. Usando valores padrão. Erro: {e}")
 
-        # Atualiza a thread com os valores carregados
         self.thread.hsv_lower = loaded_lower.copy()
         self.thread.hsv_upper = loaded_upper.copy()
 
@@ -207,32 +223,45 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         return QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
 
-    @Slot(int, int, int)
-    def update_telemetry(self, fps: int, x: int, y: int):
+    @Slot(int, int, int, int, int)
+    def update_telemetry(self, fps: int, x: int, y: int, width: int, height: int):
         if fps < 0:
             self.lbl_fps.setText("FPS: sem vídeo")
             self.lbl_coords.setText("Coordenadas: sem vídeo disponível")
-            self.image_label.clear()
-            self.mask_label.clear()
-            self.image_label.setText("Sem vídeo disponível")
-            self.mask_label.setText("Sem vídeo disponível")
+            self.image_label.setText("Feed principal indisponível")
+            self.mask_label.setText("Máscara indisponível")
+            self.mqtt.send_telemetry(0.0, 0.0, False)
             return
 
         self.lbl_fps.setText(f"FPS: {fps}")
-        if x != -1 and y != -1:
-            self.lbl_coords.setText(f"Coordenadas: X={x}, Y={y}")
+        is_valid = (x != -1 and y != -1)
+
+        if is_valid:
+            if width <= 0 or height <= 0:
+                self.lbl_coords.setText("Coordenadas: dimensão de frame inválida")
+                self.mqtt.send_telemetry(0.0, 0.0, False)
+                return
+
+            center_x, center_y = width / 2.0, height / 2.0
+            x_norm = (x - center_x) / center_x
+            y_norm = (y - center_y) / center_y
+            x_norm = max(-1.0, min(1.0, x_norm))
+            y_norm = max(-1.0, min(1.0, y_norm))
+
+            self.lbl_coords.setText(f"Centroide (Normalizado): X={x_norm:.2f}, Y={y_norm:.2f}")
+            self.mqtt.send_telemetry(x_norm, y_norm, True)
         else:
             self.lbl_coords.setText("Coordenadas: Objeto não detectado")
+            self.mqtt.send_telemetry(0.0, 0.0, False)
 
     def on_slider_change(self, value: int, index: int, is_upper: bool, label: QLabel, text: str):
         label.setText(f"{text}: {value}")
         self.thread.update_hsv(index, value, is_upper)
 
     def reset_trajectory(self):
-        self.thread.processor.reset_trajectory()
+        self.thread.reset_trajectory()
 
     def closeEvent(self, event):
-        """Salva a calibração HSV no momento em que a janela é fechada e encerra a thread."""
         config_data = {
             "hsv_lower": self.thread.hsv_lower,
             "hsv_upper": self.thread.hsv_upper
@@ -245,4 +274,5 @@ class MainWindow(QMainWindow):
             logging.error(f"Erro ao salvar configurações: {e}")
 
         self.thread.stop()
+        self.mqtt.disconnect()
         event.accept()
