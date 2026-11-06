@@ -27,3 +27,7 @@ ENV/
 # SO
 .DS_Store
 Thumbs.db
+# PlatformIO
+.pio/
+*/.pio/
+
