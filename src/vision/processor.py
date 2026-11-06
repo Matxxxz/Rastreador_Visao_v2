@@ -65,10 +65,18 @@ class FrameProcessor:
             self.lost_frames += 1
 
         if not self.has_lock:
+            # Ainda sem aquisicao inicial: so reporta se a camera ja mediu algo.
             final_centroid = measured_centroid
         elif self.lost_frames > self.max_lost_frames:
+            # TTL esgotado: perda total confirmada. Reseta o estado de rastreamento
+            # para forcaar uma re-aquisicao limpa no proximo contorno detectado,
+            # eliminando o comportamento de rastreamento fantasma.
             final_centroid = None
+            self.has_lock = False
+            self.kalman.reset()
+            self.lost_frames = 0
         else:
+            # Dentro da janela de inerccia: usa a previsao do Kalman como estimativa.
             final_centroid = measured_centroid if measured_centroid else predicted_centroid
 
         is_tracking = False
