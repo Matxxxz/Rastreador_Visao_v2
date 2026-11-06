@@ -3,6 +3,15 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
+// Guard de compatibilidade: este firmware usa a API ledc do Arduino ESP32 Core 3.x.
+// ledcAttach(pin, freq, resolution) e ledcWrite(pin, duty) foram introduzidos no Core 3.0.
+// Se você ver um erro "ledcAttach was not declared in this scope", verifique se
+// platform_packages em platformio.ini aponta para o Core 3.x (>= 3.0.0).
+// Versão do Core em uso: ESP_ARDUINO_VERSION_MAJOR deve ser >= 3.
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR < 3
+  #error "Este firmware requer Arduino ESP32 Core >= 3.0.0. Atualize platform_packages no platformio.ini."
+#endif
+
 const char* ssid            = "Wokwi-GUEST";
 const char* password        = "";
 const char* mqtt_server     = "broker.hivemq.com";
