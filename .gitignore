@@ -2,32 +2,37 @@
 venv/
 env/
 .env
+.venv/
+ENV/
 
-# Arquivos locais e IDE
+# Arquivos locais e IDEs
 .idea/
+.vscode/
+firmware/.vscode/
 __pycache__/
 *.pyc
+*.py[cod]
+*$py.class
 
 # Configurações locais
 config.py
 settings.json
 !settings.example.json
 
-# Ambiente Virtual
-.venv/
-ENV/
+# Agentes de IA e ferramentas locais
+.agents/
+.cursor/
+.geminiignore
+GEMINI.md
 
-# Python
-*.py[cod]
-*$py.class
+# PlatformIO e Firmware Build
+.pio/
+*/.pio/
+firmware/.pio/
 
-# PyCharm / IDEs
-.vscode/
+# Logs e Temporários
+*.log
 
 # SO
 .DS_Store
 Thumbs.db
-# PlatformIO
-.pio/
-*/.pio/
-
