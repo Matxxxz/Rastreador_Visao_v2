@@ -72,7 +72,7 @@ void stopMotors() {
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     lastPacketTime = millis();
 
-    StaticJsonDocument<200> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
 
     if (error) {
