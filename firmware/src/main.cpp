@@ -35,18 +35,38 @@ const unsigned long WATCHDOG_TIMEOUT = 500;  // ms
 bool isTracking = false;
 
 // --- Controle PID (Tração Diferencial) ---
-float Kp       = 100.0f;
-float Ki       = 0.0f;   // Mantido em 0 até sintonia fina no hardware físico
-float Kd       = 0.0f;
+float Kp           = 120.0f;  // Ganho proporcional — calibrar na bancada física
+float Ki           = 0.0f;    // Mantido em 0 até sintonia fina no hardware real
+float Kd           = 0.0f;    // Mantido em 0 até sintonia fina no hardware real
 float erroAnterior = 0.0f;
 float integral     = 0.0f;
-int   base_pwm     = 150;
+int   base_pwm     = 120;     // Velocidade base de ambos os motores em rastreamento reto
 
-// FIX [P1-3]: Limite de clamping do acumulador integral (anti-windup).
-// Impede crescimento ilimitado quando Ki > 0 for ativado no hardware físico.
-// Valor calculado para que Ki * MAX_INTEGRAL não ultrapasse o range de saída PID (±255).
-// Com Ki = 1.0, limita a contribuição integral a ±127 (metade do range PWM).
+// Anti-windup: teto do acumulador integral (ativo quando Ki > 0).
+// Com Ki = 1.0, a contribuição integral fica limitada a ±127 (metade do range PWM).
 const float MAX_INTEGRAL = 127.0f;
+
+// --- Normalização do sensor de visão ---
+// O pipeline Python normaliza o centroide para [-1.0, +1.0], mas na prática
+// a câmera IP nunca entrega |x_norm| = 1.0: o valor máximo observado nas bordas
+// do enquadramento é ~0.74 (limitação do campo de visão + calibração HSV).
+//
+// Problema sem normalização (base_pwm=120, Kp=120, x_max=0.74):
+//   pid_output = 120 × 0.74 = 88.8
+//   pwm_interno = 120 − 88.8 = 31.2  →  nunca atinge 0, LED oposto nunca apaga.
+//
+// Solução: normalizar o erro pelo máximo prático antes do PID.
+//   erro_norm = x_norm / X_NORM_MAX_PRATICO
+//   Com x_norm = 0.74 → erro_norm = 1.0 → pid_output = Kp = 120
+//   pwm_interno = 120 − 120 = 0  ✓  LED apaga completamente.
+//
+// X_NORM_MAX_PRATICO: ajuste este valor se trocar de câmera ou resolução.
+const float X_NORM_MAX_PRATICO = 0.74f;
+
+// Zona-morta central: suprime micro-correções quando o alvo está quase centrado.
+// Evita oscilação de PWM residual e zumbido nos motores durante rastreamento estável.
+// Unidade: fração do erro normalizado (0.0 = desativado).
+const float DEADZONE_CENTRO = 0.05f;
 
 // --- Estado da máquina de reconexão MQTT não-bloqueante ---
 // FIX [P1-2]: reconnect() com while+delay(5000) bloqueava o loop principal,
@@ -92,29 +112,44 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     float x_norm = doc["x"].as<float>();
 
-    // --- Cálculo PID ---
-    float erro    = x_norm;
-    integral     += erro;
+    // --- Pré-processamento do erro ---
 
-    // FIX [P1-3]: Anti-windup por clamping — limita o acumulador ao intervalo
-    // [-MAX_INTEGRAL, +MAX_INTEGRAL] antes de multiplicar por Ki.
-    // Essencial para evitar ganho de integral descontrolado na transição Wokwi → hardware físico.
-    integral = constrain(integral, -MAX_INTEGRAL, MAX_INTEGRAL);
+    // 1. Zona-morta central: suprime ação do controlador quando o alvo está praticamente
+    //    centrado. Evita micro-oscilações de PWM que causam zumbido nos motores físicos.
+    float erro = (fabsf(x_norm) < DEADZONE_CENTRO) ? 0.0f : x_norm;
 
-    float derivada   = erro - erroAnterior;
-    float pid_output = (Kp * erro) + (Ki * integral) + (Kd * derivada);
-    erroAnterior     = erro;
+    // 2. Normalização pelo máximo prático do sensor:
+    //    Mapeia [−X_NORM_MAX_PRATICO, +X_NORM_MAX_PRATICO] → [−1.0, +1.0].
+    //    Garante que a borda real da câmera produza erro unitário para o PID,
+    //    permitindo que pid_output alcance exatamente ±Kp e zere o motor oposto.
+    float erro_norm = constrain(erro / X_NORM_MAX_PRATICO, -1.0f, 1.0f);
 
-    // --- Mapeamento para tração diferencial ---
+    // --- Cálculo PID no espaço normalizado ---
+    integral += erro_norm;
+    integral  = constrain(integral, -MAX_INTEGRAL, MAX_INTEGRAL);  // Anti-windup
+
+    float derivada   = erro_norm - erroAnterior;
+    float pid_output = (Kp * erro_norm) + (Ki * integral) + (Kd * derivada);
+    erroAnterior     = erro_norm;
+
+    // --- Mixer de Tração Diferencial ---
+    // Ambos os motores partem de base_pwm (marcha reta).
+    // pid_output desloca PWM para cima em um lado e para baixo no outro.
+    //
+    // Garantia matemática após normalização:
+    //   pid_output_max = Kp × 1.0 = 120
+    //   pwm_min        = base_pwm − Kp = 120 − 120 = 0  ✓
+    //   pwm_max        = base_pwm + Kp = 120 + 120 = 240 (dentro de [0, 255]) ✓
+    //
+    // constrain() protege contra extrapolação caso Ki ou Kd adicionem overshoot.
     int pwm_esquerdo = constrain((int)(base_pwm + pid_output), 0, 255);
     int pwm_direito  = constrain((int)(base_pwm - pid_output), 0, 255);
 
-    // FIX [P1-1]: ledcWrite com pino (Core 3.x).
     ledcWrite(PIN_ENA, pwm_esquerdo);
     ledcWrite(PIN_ENB, pwm_direito);
 
-    Serial.printf("X: %.3f | PID: %.2f | PWM_E: %d | PWM_D: %d | Integral: %.2f\n",
-                  x_norm, pid_output, pwm_esquerdo, pwm_direito, integral);
+    Serial.printf("X: %.3f | Norm: %.3f | PID: %.2f | PWM_E: %d | PWM_D: %d | Int: %.2f\n",
+                  x_norm, erro_norm, pid_output, pwm_esquerdo, pwm_direito, integral);
 }
 
 // ---------------------------------------------------------------------------
