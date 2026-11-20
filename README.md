@@ -144,28 +144,60 @@ Com a lógica de controle e a comunicação E2E consolidadas na simulação, o p
 
 ```bash
 Rastreador_Visao_v2/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                      # CI: Lint (ruff), Testes (pytest), Build PlatformIO, Secret Scan
 ├── docs/                               # Documentação e artefatos de engenharia
 │   └── assets/
 │       └── pan_tilt_concept.jpg        # Render do conceito 3D da Torreta Pan-Tilt
 ├── firmware/                           # Subprojeto Embarcado (PlatformIO)
 │   ├── diagram.json                    # Circuito de simulação do Wokwi
-│   ├── platformio.ini                  # Configuração do pioarduino (Core 3.3.x)
+│   ├── include/
+│   │   ├── mqtt_config.h               # Configuração multi-ambiente (Wokwi, Local, Prod)
+│   │   ├── secrets.example.h           # Template seguro de credenciais Wi-Fi/MQTT
+│   │   └── ca_cert.example.h           # Template de certificado CA para TLS
+│   ├── platformio.ini                  # Configuração do pioarduino (Core 3.3.x fixado)
 │   └── src/
-│       └── main.cpp                    # Firmware C++ (LEDC, PID, Watchdog, MQTT)
+│       └── main.cpp                    # Firmware C++ (LEDC, PID, Watchdog, MQTT com validação estrita)
 ├── src/                                # Host de Visão Computacional (Python)
 │   ├── gui/
 │   │   └── app.py                      # Interface Gráfica reativa (PySide6 / Qt6)
 │   ├── io/
-│   │   └── mqtt_sender.py              # Cliente MQTT assíncrono (Paho-MQTT)
+│   │   └── mqtt_sender.py              # Cliente MQTT com TLS, auth, validação de payload e throttle
 │   └── vision/
 │       ├── camera.py                   # Thread de captura de vídeo resiliente
 │       ├── kalman.py                   # Filtro de Kalman cinemático 2D
 │       └── processor.py                # Pipeline HSV, contornos e normalização
+├── tests/                              # Suite de testes automatizados (pytest)
+│   ├── conftest.py                     # Fixtures e mocks de configuração
+│   ├── test_mqtt_validation.py         # Testes de segurança e validação MQTT
+│   └── test_processor.py               # Testes do processador de imagem e Kalman
+├── config.example.py                   # Template de configuração local (câmera, broker, TLS)
 ├── config.py                           # Parâmetros locais do host (ignorado no Git)
 ├── main.py                             # Ponto de entrada da aplicação Python
-├── requirements.txt                    # Dependências Python congeladas
+├── requirements.txt                    # Dependências Python de produção (versões exatas)
+├── requirements-dev.txt                # Dependências de desenvolvimento e CI (pytest, ruff)
+├── SECURITY.md                         # Política de segurança e reporte privado
 └── settings.example.json               # Modelo de calibração HSV de referência
 ```
+
+---
+
+## 🔒 Segurança e Ambientes de Execução
+
+O projeto adota uma arquitetura em camadas com separação clara entre **Simulação**, **Desenvolvimento Local** e **Produção**:
+
+| Recurso | Simulação (Wokwi) | Desenvolvimento Local | Produção (Hardware Real) |
+|---|---|---|---|
+| **Rede Wi-Fi** | `Wokwi-GUEST` (virtual) | Rede local (via `secrets.h`) | Rede restrita/VLAN (via `secrets.h`) |
+| **Broker MQTT** | `broker.hivemq.com` | Broker Mosquitto local | Broker dedicado com TLS |
+| **Porta MQTT** | 1883 (TCP claro) | 1883 (LAN isolada) | **8883 (TLS com validação de CA)** |
+| **Autenticação** | Anônima | Opcional | **Obrigatória (usuário/senha via secrets.h)** |
+| **Validação Payload** | Estrita (tipo, faixa, NaN/Inf) | Estrita | Estrita |
+| **Watchdog Rede** | 500 ms (corta PWM) | 500 ms | 500 ms |
+
+> [!IMPORTANT]
+> **NUNCA** commite `config.py`, `secrets.h`, `ca_cert.h`, `settings.json` ou arquivos `.pem`/`.crt`. Todos estão protegidos no `.gitignore`. Use sempre os templates `*.example.*` como base.
 
 ---
 
@@ -174,7 +206,7 @@ Rastreador_Visao_v2/
 ### Pré-requisitos
 * Sistema Operacional: Windows 10/11 (PowerShell).
 * Python 3.10.x com ambiente virtual configurado.
-* PlatformIO Core (instalado globalmente via `pipx` ou extensão no VS Code).
+* PlatformIO Core (instalado via `pip` ou extensão no VS Code).
 
 ### 1. Inicializando o Host de Visão (Python)
 
@@ -184,30 +216,50 @@ Abra o terminal PowerShell na raiz do projeto:
 # Ativar o ambiente virtual
 .\.venv\Scripts\Activate.ps1
 
-# Instalar as dependências (caso seja a primeira execução)
+# Instalar dependências
 pip install -r requirements.txt
 
-# Copiar a configuração inicial (se settings.json não existir)
+# Configurar parâmetros locais (se primeira execução)
+Copy-Item config.example.py config.py
 Copy-Item settings.example.json settings.json
 
 # Executar a aplicação principal
 python main.py
 ```
 
-*Na interface gráfica, insira o URL da câmera (ex: `http://192.168.0.X:8080/video`) e clique em **Iniciar Câmera** e **Conectar MQTT**.*
+### 2. Executando os Testes Automatizados
 
-### 2. Compilando e Executando o Firmware (ESP32)
+```powershell
+# Instalar dependências de dev/teste
+pip install -r requirements-dev.txt
 
-Abra um segundo terminal na pasta `firmware/`:
+# Executar suite completa de testes
+python -m pytest tests/ -v
+
+# Executar o linter
+python -m ruff check .
+```
+
+### 3. Compilando e Executando o Firmware (ESP32)
+
+Abra o terminal na pasta `firmware/`:
 
 ```powershell
 cd firmware
 
-# Compilar o firmware com o pioarduino Core 3.x
+# Modo 1: Simulação no Wokwi (default — usa rede virtual e HiveMQ público)
 pio run --environment esp32dev
 
-# Para upload em hardware real:
-pio run --target upload --environment esp32dev
+# Modo 2: Desenvolvimento Local (requer firmware/include/secrets.h)
+# Copy-Item include/secrets.example.h include/secrets.h
+pio run --environment esp32local
+
+# Modo 3: Produção com TLS (requer secrets.h e ca_cert.h)
+# Copy-Item include/ca_cert.example.h include/ca_cert.h
+pio run --environment esp32prod
+
+# Upload para ESP32 físico via USB:
+pio run --target upload --environment esp32prod
 pio device monitor --baud 115200
 ```
 

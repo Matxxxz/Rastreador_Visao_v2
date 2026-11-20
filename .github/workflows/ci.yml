@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # =========================================================================
+  # Python: Lint + Testes
+  # =========================================================================
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: python -m ruff check . --select=E,F,W --ignore=E501
+
+      - name: Testes unitários
+        run: python -m pytest tests/ -v --tb=short
+
+  # =========================================================================
+  # Firmware: Build PlatformIO (ambiente Wokwi)
+  # =========================================================================
+  firmware-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Instalar PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware (Wokwi)
+        run: cd firmware && pio run -e esp32dev
+
+  # =========================================================================
+  # Segurança: Verificação de arquivos sensíveis no Git
+  # =========================================================================
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar arquivos sensíveis
+        run: |
+          EXIT_CODE=0
+
+          # Arquivos que NUNCA devem ser rastreados pelo Git
+          for f in config.py settings.json .env; do
+            if git ls-files --error-unmatch "$f" 2>/dev/null; then
+              echo "::error::Arquivo sensível rastreado pelo Git: $f"
+              EXIT_CODE=1
+            fi
+          done
+
+          # Padrão: firmware secrets
+          for f in firmware/include/secrets.h firmware/include/ca_cert.h; do
+            if git ls-files --error-unmatch "$f" 2>/dev/null; then
+              echo "::error::Credencial de firmware no Git: $f"
+              EXIT_CODE=1
+            fi
+          done
+
+          # Extensões sensíveis em qualquer diretório
+          for ext in pem key p12 pfx; do
+            FOUND=$(git ls-files "*.${ext}" 2>/dev/null)
+            if [ -n "$FOUND" ]; then
+              echo "::error::Arquivo sensível encontrado: $FOUND"
+              EXIT_CODE=1
+            fi
+          done
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ Nenhum arquivo sensível encontrado no Git."
+          fi
+          exit $EXIT_CODE

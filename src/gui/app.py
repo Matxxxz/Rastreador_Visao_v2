@@ -112,6 +112,7 @@ class VideoThread(QThread):
         if not self.wait(2000):
             logging.warning("OpenCV travado em I/O de rede. Executando encerramento forçado da thread.")
             self.terminate()
+            self.wait(500)
 
 
 class MainWindow(QMainWindow):
@@ -190,8 +191,8 @@ class MainWindow(QMainWindow):
             hsv_index = i % 3
 
             slider.valueChanged.connect(
-                lambda val, idx=hsv_index, upper=is_upper, l=lbl, txt=labels[i]:
-                self.on_slider_change(val, idx, upper, l, txt)
+                lambda val, idx=hsv_index, upper=is_upper, label_widget=lbl, txt=labels[i]:
+                self.on_slider_change(val, idx, upper, label_widget, txt)
             )
 
             hsv_grid.addWidget(lbl, i, 0)
