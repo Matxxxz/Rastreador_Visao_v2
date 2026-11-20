@@ -22,6 +22,15 @@ O projeto encontra-se na transição entre a **Fase 1 (Validação Completa em S
 
 ---
 
+## 🤖 Metodologia de Desenvolvimento & Engenharia com IA
+Projeto experimental concebido e implementado com o suporte de ferramentas de IA generativa (*Cursor* e *Antigravity*).
+
+- **Responsabilidade Autoral:** Arquitetura distribuída orientada a eventos, integração de protocolos, calibração manual de parâmetros ópticos/espaciais (coeficiente de tolerância 0.74 via IP Webcam), depuração de concorrência, elaboração do plano de testes e versionamento estruturado (28 commits).
+- **Fase 1 (Atual):** Validação funcional de ponta a ponta em simulação (Wokwi + HiveMQ Broker).
+- **Fase 2 (Roadmap):** Atuação em bancada física com servos Pan-Tilt e hardware dedicado.
+
+---
+
 ## 🏗️ Arquitetura do Sistema
 
 O fluxo de dados é 100% assíncrono e não-bloqueante em todas as camadas da aplicação:
